@@ -1,42 +1,21 @@
 const fs = require('fs');
 const path = require('node:path');
 const { Client, Collection, Events, GatewayIntentBits, EmbedBuilder, ButtonBuilder, ActionRowBuilder, ButtonStyle} = require('discord.js');
-const { token } = require('./config.json');
-const sqlite3 = require('sqlite3').verbose();
+const { token, mainChannel_id, secondChannel_id, guildId } = require('./config.json');
+const Datastore = require('nedb');
+const buildButtonRow = require("./buttonRow");
 
-let db = new sqlite3.Database('./players.db', (err) => {
-    if (err) {
-        return console.error(err.message);
-    }
-    console.log('Connected to the SQlite database.');
+let playersDb = new Datastore({ filename: './players.db', autoload: true });
+let statisticsDb = new Datastore({ filename: './statistics.db', autoload: true });
+
+module.exports.statisticsDb = statisticsDb;
+
+playersDb.ensureIndex({ fieldName: 'message_id' }, function (err) {
+    if (err) console.log('Error creating index', err);
 });
 
-let db2 = new sqlite3.Database('./statistics.db', (err) => {
-    if (err) {
-        return console.error(err.message);
-    }
-    console.log('Connected to the SQlite database.');
-});
-
-module.exports.db2 = db2;
-
-db.run(`CREATE TABLE IF NOT EXISTS players (
-    message_id TEXT,
-    user_id TEXT
-)`, (err) => {
-    if (err) {
-        console.log('Error creating table', err);
-    }
-});
-
-db2.run(`CREATE TABLE IF NOT EXISTS statistics (
-    user_id TEXT,
-    wins INTEGER DEFAULT 0,
-    loses INTEGER DEFAULT 0
-)`, (err) => {
-    if (err) {
-        console.log('Error creating table', err);
-    }
+statisticsDb.ensureIndex({ fieldName: 'user_id' }, function (err) {
+    if (err) console.log('Error creating index', err);
 });
 
 
@@ -89,33 +68,29 @@ client.on('interactionCreate', async interaction => {
 
     if (interaction.customId === 'willPlay') {
         // Check if user is already in the database
-        let stmt1 = db.prepare(`SELECT * FROM players WHERE message_id = ? AND user_id = ?`);
-        stmt1.get(interaction.message.id, interaction.user.id, function(err, row) {
+        playersDb.find({ message_id: interaction.message.id, user_id: interaction.user.id }, function (err, docs) {
             if (err) {
-                console.log(err.message);
+                console.log(err);
+                interaction.deferUpdate();
                 return;
             }
 
-            if (row) {
+            if (docs.length > 0) {
                 // User is already in the database
                 console.log(`User ${interaction.user.tag} is already in the player list.`);
-                stmt1.finalize();
                 interaction.deferUpdate();
                 return;
             }
 
             // User is not in the database, insert a new row
             console.log(`User ${interaction.user.tag} wants to play.`);
-
-            let stmt2 = db.prepare(`INSERT INTO players VALUES (?, ?)`);
-            stmt2.run(interaction.message.id, interaction.user.id, function(err) {
+            playersDb.insert({ message_id: interaction.message.id, user_id: interaction.user.id }, function (err, newDoc) {
                 if (err) {
-                    console.log(err.message);
+                    console.log(err);
                     return;
                 }
-                console.log(`A row has been inserted with rowid ${this.lastID}`);
+                console.log(`A document has been inserted with _id ${newDoc._id}`);
             });
-            stmt2.finalize();
 
             // Fetch the updated list of players from the database
             updatePlayerList(interaction.message, interaction);
@@ -123,46 +98,42 @@ client.on('interactionCreate', async interaction => {
         });
     } else if (interaction.customId === 'wontPlay') {
         // Check if user is in the database
-        let stmt3 = db.prepare(`SELECT * FROM players WHERE message_id = ? AND user_id = ?`);
-        stmt3.get(interaction.message.id, interaction.user.id, function(err, row) {
+        playersDb.findOne({ message_id: interaction.message.id, user_id: interaction.user.id }, function(err, doc) {
             if (err) {
-                console.log(err.message);
+                console.log(err);
                 return;
             }
 
-            if (!row) {
+            if (!doc) {
                 // User is not in the database
                 console.log(`User ${interaction.user.tag} is not in the player list.`);
-                stmt3.finalize();
                 interaction.deferUpdate();
                 return;
             }
 
-            // User is in the database, remove the row
-            let stmt4 = db.prepare(`DELETE FROM players WHERE message_id = ? AND user_id = ?`);
-            stmt4.run(interaction.message.id, interaction.user.id, function(err) {
+            // User is in the database, remove the document
+            playersDb.remove({ message_id: interaction.message.id, user_id: interaction.user.id }, {}, function(err, numRemoved) {
                 if (err) {
-                    console.log(err.message);
+                    console.log(err);
                     return;
                 }
-                console.log(`A row has been deleted with rowid ${this.lastID}`);
+                console.log(`A document has been deleted: ${numRemoved} document(s) removed.`);
             });
-            stmt4.finalize();
 
             // Fetch the updated list of players from the database
             updatePlayerList(interaction.message, interaction);
             interaction.deferUpdate();
         });
     }
-
-    const resultsChannel = interaction.guild.channels.cache.find((x) => x.id === '1096887586720583700');
-    const mainChannel = interaction.guild.channels.cache.find((x) => x.id === '1096887708284096653');
+    const resultsChannel = interaction.guild.channels.cache.find((x) => x.id === secondChannel_id);
+    const mainChannel = interaction.guild.channels.cache.find((x) => x.id === mainChannel_id);
 
     if (interaction.customId === 'win' || interaction.customId === 'lose') {
         const embedColor = interaction.customId === 'win' ? '#00ff05' : '#ff0000';
         const embedTitle = interaction.customId === 'win' ? 'WIN' : 'LOSE';
 
         const existingEmbed = interaction.message.embeds[0];
+        let existingFields = existingEmbed.fields;
         const mainMessageId = existingEmbed.footer.text; // Assuming the footer contains the ID
         const mainMessage = await mainChannel.messages.fetch(mainMessageId);
         const newComponents = mainMessage.components.map((actionRow) => {
@@ -174,15 +145,12 @@ client.on('interactionCreate', async interaction => {
                         .setStyle(button.style)
                         .setDisabled(true);
                 } else {
-                    console.log('false button')
                     return button;
                 }
             });
 
-            const newRow = new ActionRowBuilder()
+            return new ActionRowBuilder()
                 .addComponents(newButtons);
-
-            return newRow;
         });
 
         await mainMessage.edit({components: newComponents});
@@ -190,6 +158,8 @@ client.on('interactionCreate', async interaction => {
             .setColor(embedColor)
             .setTitle(embedTitle)
             .setDescription(existingEmbed.description)
+            .setThumbnail('https://cdn.discordapp.com/icons/1096872981453615155/d88dc367ddd3acf66f1ad4dd267fed14.webp')
+            .setFields(existingFields)
             .setFooter({ text: mainMessageId });
 
         await interaction.message.edit({embeds: [existingEmbed], rows: []});
@@ -209,73 +179,41 @@ client.on('interactionCreate', async interaction => {
 
         await (async () => {
             try {
-                const rows = await new Promise((resolve, reject) => {
-                    db.all('SELECT user_id FROM players WHERE message_id = ?', [interaction.message.id], (err, rows) => {
-                        if (err) {
-                            reject(err);
-                        } else {
-                            resolve(rows);
-                        }
-                    });
-                });
-
-                if (!rows) {
-                    console.log('No rows found in the database.');
-                    return;
-                }
-
-                for (const row of rows) {
-                    const userId = row.user_id;
-                    const stmt6 = db2.prepare(
-                        interaction.customId === 'win'
-                            ? 'UPDATE statistics SET wins = wins + 1 WHERE user_id = ?'
-                            : 'UPDATE statistics SET loses = loses + 1 WHERE user_id = ?'
-                    );
-                    await new Promise((resolve, reject) => {
-                        stmt6.run(userId, function (err) {
-                            if (err) {
-                                reject(err);
-                            } else {
-                                resolve();
-                            }
-                        });
-                    });
-                    console.log(`Statistics updated for user with ID ${userId}`);
-                }
-
-                // Check if the user ID is in the statistics table
-                const stmt7 = db2.prepare('SELECT * FROM statistics WHERE user_id = ?');
-                stmt7.get(interaction.user.id, function (err, row) {
+                playersDb.find({ message_id: interaction.message.id }, function (err, rows) {
                     if (err) {
-                        console.log(err.message);
+                        console.log(err);
                         return;
                     }
 
-                    if (!row) {
-                        // User is not in the statistics table, insert a new row
-                        const stmt8 = db2.prepare('INSERT INTO statistics (user_id, wins, loses) VALUES (?, ?, ?)');
-                        stmt8.run(interaction.user.id, interaction.customId ? 1 : 0, // Set wins to 1 if it's a win, otherwise set it to 0
-                            interaction.customId === 'lose' ? 1 : 0 // Set loses to 1 if it's a lose, otherwise set it to 0
-                        );
-                        stmt8.finalize();
-                        console.log(`A row has been inserted into statistics for user with ID ${interaction.user.id}`);
+                    if (!rows || rows.length === 0) {
+                        console.log('No rows found in the database.');
+                        return;
+                    }
+
+                    for (const row of rows) {
+                        const userId = row.user_id;
+                        let updateQuery = {};
+                        if (interaction.customId === 'win') {
+                            updateQuery = { $inc: { wins: 1 } };
+                        } else if (interaction.customId === 'lose') {
+                            updateQuery = { $inc: { loses: 1 } };
+                        }
+
+                        // Add the upsert option to the update function
+                        statisticsDb.update({ user_id: userId }, updateQuery, { upsert: true }, function (err, numAffected, affectedDocuments, upsert) {
+                            if (err) {
+                                console.log(err);
+                                return;
+                            }
+                            if (upsert) {
+                                console.log(`New document created for user with ID ${userId}`);
+                            } else {
+                                console.log(`Statistics updated for user with ID ${userId}`);
+                            }
+                        });
                     }
                 });
-                stmt7.finalize();
-
-                const statisticsRows = await new Promise((resolve, reject) => {
-                    db2.all('SELECT * FROM statistics', (err, rows) => {
-                        if (err) {
-                            reject(err);
-                        } else {
-                            resolve(rows);
-                        }
-                    });
-                });
-
-                console.log('Statistics:');
-                console.log(statisticsRows);
-            } catch (err) {
+                } catch (err) {
                 console.error(err);
             }
         })();
@@ -305,14 +243,22 @@ client.on('interactionCreate', async interaction => {
             return newRow;
         });
 
-        await interaction.message.edit({components: newComponents});
+        await mainMessage.edit({components: newComponents});
 
-        const stmt = db2.prepare(
-            interaction.message.embeds[0].title === 'WIN'
-                ? 'UPDATE statistics SET wins = wins - 1 WHERE user_id = ?'
-                : 'UPDATE statistics SET loses = loses - 1 WHERE user_id = ?'
-        );
-        stmt.run(interaction.user.id);
+        let updateQuery = {};
+        if (interaction.message.embeds[0].title === 'WIN') {
+            updateQuery = { $inc: { wins: -1 } };
+        } else {
+            updateQuery = { $inc: { loses: -1 } };
+        }
+
+        statisticsDb.update({ user_id: interaction.user.id }, updateQuery, {}, function (err, numAffected) {
+            if (err) {
+                console.log(err);
+                return;
+            }
+            console.log(`Statistics updated for user with ID ${interaction.user.id}`);
+        });
 
         await interaction.message.delete();
     }
@@ -329,12 +275,20 @@ client.on('interactionCreate', async interaction => {
             newColor = '#00ff05';
         }
 
-        const stmt = db2.prepare(
-            existingEmbed.title === 'WIN'
-                ? 'UPDATE statistics SET wins = wins - 1, loses = loses + 1 WHERE user_id = ?'
-                : 'UPDATE statistics SET wins = wins + 1, loses = loses - 1 WHERE user_id = ?'
-        );
-        stmt.run(interaction.user.id);
+        let updateQuery = {};
+        if (existingEmbed.title === 'WIN') {
+            updateQuery = { $inc: { wins: -1, loses: 1 } };
+        } else {
+            updateQuery = { $inc: { wins: 1, loses: -1 } };
+        }
+
+        statisticsDb.update({ user_id: interaction.user.id }, updateQuery, {}, function (err, numAffected) {
+            if (err) {
+                console.log(err);
+                return;
+            }
+            console.log(`Statistics updated for user with ID ${interaction.user.id}`);
+        });
 
         const newEmbed = new EmbedBuilder()
             .setColor(newColor)
@@ -346,55 +300,118 @@ client.on('interactionCreate', async interaction => {
         await interaction.message.edit({embeds: [newEmbed]});
         interaction.deferUpdate();
     }
+    if (interaction.customId === 'editList') {
+        // Fetch all players for the current message from the database
+        playersDb.find({ message_id: interaction.message.id }, async function(err, docs) {
+            if (err) {
+                console.log(err);
+                interaction.deferUpdate();
+                return;
+            }
+
+            let playerButtons = [];
+            for (let doc of docs) {
+                // Fetch the username for the current user ID
+                let username = await fetchUsername(doc.user_id);
+                if (!username) {
+                    console.error(`Could not fetch username for user ID ${doc.user_id}`);
+                    continue; // Skip this iteration and move to the next one
+                }
+
+                let button = new ButtonBuilder()
+                    .setCustomId(`removePlayer-${doc.user_id}`) // Custom ID contains the user ID
+                    .setLabel(username) // Button label is the username
+                    .setStyle(ButtonStyle.Secondary);
+
+                console.log(button); // Log the button
+                playerButtons.push(button);
+            }
+
+            const closeButton = new ButtonBuilder()
+                .setCustomId('closeEditList')
+                .setLabel('Close')
+                .setStyle(ButtonStyle.Danger);
+            playerButtons.push(closeButton);
+
+            const row = new ActionRowBuilder()
+                .addComponents(playerButtons);
+
+            await interaction.message.edit({ components: [row] });
+
+            interaction.deferUpdate();
+        });
+    } else if (interaction.customId.startsWith('removePlayer-')) {
+        // A player button was clicked, remove the player from the database
+        const userId = interaction.customId.split('-')[1]; // User ID is the second part of the custom ID
+        playersDb.remove({ message_id: interaction.message.id, user_id: userId }, {}, function(err, numRemoved) {
+            if (err) {
+                console.log(err);
+                return;
+            }
+            console.log(`A document has been deleted: ${numRemoved} document(s) removed.`);
+
+            // Fetch the updated list of players from the database
+            updatePlayerList(interaction.message, interaction);
+            interaction.deferUpdate();
+        });
+    } else if (interaction.customId === 'closeEditList') {
+        await interaction.message.edit({ components: [buildButtonRow()] });
+        interaction.deferUpdate();
+    }
 });
 
+async function fetchUsername(userId, interaction) {
+    try {
+        const user = await client.users.fetch(userId);
+        return user.username;
+    } catch (error) {
+        console.error(`Error fetching username for user ID ${userId}: ${error}`);
+        return null;
+    }
+}
+
 function updatePlayerList(message, interaction) {
-    let stmt = db.prepare(`SELECT user_id FROM players WHERE message_id = ?`);
-    stmt.all(message.id, (err, rows) => {
+    playersDb.find({ message_id: message.id }, function (err, docs) {
         if (err) {
             console.log(err);
             return;
         }
 
         let players = '';
-        if (rows.length > 0) {
-            rows.forEach(row => {
-                players += `<@${row.user_id}> - ` + interaction.user.username + ` \n`;
+        if (docs.length > 0) {
+            docs.forEach(doc => {
+                players += `<@${doc.user_id}>\n`;
             });
         }
 
         let existingEmbed = message.embeds[0];
-        let existingDescriptionLines = existingEmbed.description ? existingEmbed.description.split('\n') : [];
-        let playersIndex = existingDescriptionLines.indexOf('**ПЛЮСЫ:**');
-        let newDescriptionLines = playersIndex !== -1 ? existingDescriptionLines.slice(0, playersIndex) : existingDescriptionLines;
+        let existingFields = existingEmbed.fields;
+        let newDescriptionLines = []
 
         if (players.length > 0) {
-            if (playersIndex === -1) {
-                newDescriptionLines.push('\n**ПЛЮСЫ:**');
-            }
+            newDescriptionLines.push('\n**ПЛЮСЫ:**');
             newDescriptionLines = newDescriptionLines.concat(players);
         }
-
-        console.log(newDescriptionLines)
-        console.log(newDescriptionLines.length)
 
         if (newDescriptionLines.length > 0) {
             const newEmbed = new EmbedBuilder()
                 .setTitle(existingEmbed.title)
                 .setThumbnail('https://cdn.discordapp.com/icons/1096872981453615155/d88dc367ddd3acf66f1ad4dd267fed14.webp')
                 .setDescription(newDescriptionLines.join('\n'))
+                .addFields(existingFields)
                 .setFooter({ text: interaction.message.id });
             message.edit({ embeds: [newEmbed] });
         } else {
             const newEmbed = new EmbedBuilder()
                 .setTitle(existingEmbed.title)
                 .setThumbnail('https://cdn.discordapp.com/icons/1096872981453615155/d88dc367ddd3acf66f1ad4dd267fed14.webp')
-                .setFooter({ text: interaction.message.id });
+                .setFooter({ text: interaction.message.id })
+                .addFields(existingFields);
             message.edit({ embeds: [newEmbed] });
         }
     });
-    stmt.finalize();
 }
+
 
 
 client.login(token);

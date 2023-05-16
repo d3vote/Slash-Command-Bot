@@ -1,13 +1,13 @@
 {
-  "name": "ticket-bot",
-  "version": "0.0.2",
-  "description": "Discord Modals Simple Ticket Bot",
+  "name": "events-manager-bot",
+  "version": "1.0.0",
+  "description": "Discord Events Manager",
   "type": "commonjs",
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js"
   },
-  "author": "feyit#9316",
+  "author": "d3vote#4405",
   "license": "MIT",
   "dependencies": {
     "@discordjs/builders": "^1.6.3",
@@ -17,6 +17,6 @@
     "discord-api-types": "^0.37.42",
     "discord.js": "^14.10.2",
     "discord.js-12": "^1.0.2",
-    "sqlite3": "^5.1.6"
+    "nedb": "^1.8.0"
   }
 }

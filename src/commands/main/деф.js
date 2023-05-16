@@ -1,6 +1,8 @@
 // деф.js
 const { SlashCommandBuilder } = require('@discordjs/builders');
 const { ButtonStyle, EmbedBuilder, ButtonBuilder, ActionRowBuilder} = require("discord.js");
+const { mainChannel_id } = require('../../config.json');
+const buildButtonRow = require("../../buttonRow");
 
 module.exports = {
     data: new SlashCommandBuilder()
@@ -52,32 +54,9 @@ module.exports = {
             .setThumbnail('https://cdn.discordapp.com/icons/1096872981453615155/d88dc367ddd3acf66f1ad4dd267fed14.webp')
             .setDescription(description)
 
-        const willPlay = new ButtonBuilder()
-            .setCustomId('willPlay')
-            .setLabel('✅')
-            .setStyle(ButtonStyle.Secondary);
+        const mainChannel = interaction.guild.channels.cache.find((x) => x.id === mainChannel_id);
 
-        const wontPlay = new ButtonBuilder()
-            .setCustomId('wontPlay')
-            .setLabel('❌')
-            .setStyle(ButtonStyle.Secondary);
-
-        const winButton = new ButtonBuilder()
-            .setCustomId('win')
-            .setLabel('Win')
-            .setStyle(ButtonStyle.Success);
-
-        const loseButton = new ButtonBuilder()
-            .setCustomId('lose')
-            .setLabel('Lose')
-            .setStyle(ButtonStyle.Danger);
-
-        const row = new ActionRowBuilder()
-            .addComponents(willPlay, wontPlay, winButton, loseButton);
-
-        const mainChannel = interaction.guild.channels.cache.find((x) => x.id === '1096887708284096653');
-
-        mainChannel.send({ content: '@everyone', embeds: [embed], components: [row] });
+        mainChannel.send({ content: '@everyone', embeds: [embed], components: [buildButtonRow()] });
         interaction.reply({ content: "Готово!",  ephemeral: true });
     }
 };
